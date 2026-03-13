@@ -1,0 +1,29 @@
+{
+  "name": "blueprint-builder-web",
+  "version": "1.0.0",
+  "description": "AI-assisted project specification engine — web chat interface",
+  "main": "server.js",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/generative-ai": "^0.24.0",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^11.9.1",
+    "dotenv": "^16.4.7",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "ioredis": "^5.7.0",
+    "openai": "^4.87.3",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "supertest": "^7.2.2"
+  }
+}

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Proyect Blueprint Builder</title>
+    <link rel="stylesheet" href="/css/style.v2.css" />
+</head>
+
+<body>
+
+    <!-- ─── Landing screen ─────────────────────────────── -->
+    <div id="landing" class="landing">
+        <div class="landing-card">
+            <div class="landing-icon">🏗️</div>
+            <h1>Proyect Blueprint Builder</h1>
+            <p>Transform your software idea into a complete, implementation-ready specification pack — guided step
+                by step by an AI architect.</p>
+            <ul class="landing-features">
+                <li>✦ 18-stage structured process</li>
+                <li>✦ Generates all spec documents automatically</li>
+                <li>✦ Download your complete spec pack as ZIP</li>
+            </ul>
+            <button id="start-btn" class="btn-primary">Get Started →</button>
+        </div>
+    </div>
+
+    <!-- ─── Setup screen ───────────────────────────────── -->
+    <div id="setup-screen" class="landing hidden">
+        <div class="landing-card setup-card">
+            <button id="setup-back-btn" class="btn-back">← Back</button>
+            <div class="landing-icon">🔑</div>
+            <h2>Connect your AI</h2>
+            <p class="setup-subtitle">Your API key is encrypted and never logged. It stays in your session only.</p>
+
+            <div class="form-group">
+                <label class="form-label">AI Provider</label>
+                <div class="provider-grid">
+                    <button class="provider-btn active" data-provider="anthropic">
+                        <span class="provider-name">Anthropic</span>
+                        <span class="provider-note">Claude — Paid</span>
+                    </button>
+                    <button class="provider-btn" data-provider="openai">
+                        <span class="provider-name">OpenAI</span>
+                        <span class="provider-note">GPT-4 — Paid</span>
+                    </button>
+                    <button class="provider-btn free" data-provider="gemini">
+                        <span class="provider-name">Gemini</span>
+                        <span class="provider-note free-badge">Free tier ✓</span>
+                    </button>
+                    <button class="provider-btn free" data-provider="groq">
+                        <span class="provider-name">Groq</span>
+                        <span class="provider-note free-badge">Free tier ✓</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="form-group" id="free-tip" style="display:none">
+                <div class="tip-box">
+                    <strong>🆓 Free API key:</strong> <span id="tip-text"></span>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="api-key-input">API Key</label>
+                <div class="key-input-wrap">
+                    <input type="password" id="api-key-input" class="form-input" placeholder="Paste your API key here"
+                        autocomplete="off" spellcheck="false" />
+                    <button id="toggle-key-btn" class="btn-icon" title="Show/hide key">👁</button>
+                </div>
+            </div>
+
+            <div id="setup-error" class="setup-error hidden"></div>
+
+            <button id="connect-btn" class="btn-primary">Connect & Start →</button>
+        </div>
+    </div>
+
+    <!-- ─── Chat screen ─────────────────────────────────── -->
+    <div id="chat-screen" class="chat-screen hidden">
+
+        <div class="chat-header">
+            <div class="chat-header-left">
+                <div class="avatar">🏗️</div>
+                <div class="chat-header-info">
+                    <div class="chat-header-name">Proyect Blueprint Builder</div>
+                    <div class="chat-header-status" id="header-status">online</div>
+                </div>
+            </div>
+            <div class="chat-header-right">
+                <div class="provider-tag" id="provider-tag"></div>
+                <div class="stage-badge" id="stage-badge">Stage 0 / 18</div>
+                <button id="download-btn" class="btn-download hidden" title="Download spec pack">
+                    ⬇ Download ZIP
+                </button>
+            </div>
+        </div>
+
+        <div class="progress-bar-wrap">
+            <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+        </div>
+
+        <div class="messages" id="messages"></div>
+
+        <div class="chat-input-area">
+            <textarea id="message-input" class="message-input" placeholder="Type a message…" rows="1"
+                disabled></textarea>
+            <button id="send-btn" class="send-btn" disabled>
+                <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                </svg>
+            </button>
+        </div>
+
+    </div>
+
+    <script src="/js/chat.v2.js"></script>
+</body>
+
+</html>
