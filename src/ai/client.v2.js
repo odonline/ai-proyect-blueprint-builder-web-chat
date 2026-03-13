@@ -223,6 +223,9 @@ const MODEL_DEFAULTS = {
 }
 
 function createAIClient(provider, apiKey) {
+    const model = process.env[`${provider.toUpperCase()}_MODEL`] || MODEL_DEFAULTS[provider]
+    console.log(`[AI] Client initialized: ${provider} (${model})`)
+
     switch (provider) {
         case 'openai': return new OpenAIClient(apiKey)
         case 'gemini': return new GeminiClient(apiKey)

@@ -24,6 +24,7 @@ router.post('/session', async (req, res) => {
 
     try {
         const session = await sessionManager.create({ provider, apiKey: apiKey.trim() })
+        console.log(`[Session] Created: ${session.id} (${provider})`)
         res.json({ sessionId: session.id, provider: session.provider })
     } catch (err) {
         console.error('Create session error:', err)
@@ -78,9 +79,14 @@ router.post('/:sessionId', async (req, res) => {
     const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`)
 
     try {
+        console.log(`[Chat] Message from ${sessionId}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`)
+
         if (session.stage === 0 && !session.language) {
             const detected = detectLanguage(message)
-            if (detected) await sessionManager.setLanguage(sessionId, detected)
+            if (detected) {
+                console.log(`[Chat] Language detected for ${sessionId}: ${detected}`)
+                await sessionManager.setLanguage(sessionId, detected)
+            }
         }
 
         await sessionManager.addMessage(sessionId, 'user', message)
@@ -96,8 +102,13 @@ router.post('/:sessionId', async (req, res) => {
         // Use provider + decrypted key from session
         const aiClient = createAIClient(freshSession.provider, freshSession.apiKey)
         let assistantText = ''
+        let stageAdvanced = false
+        let generatedFile = null
+
+        console.log(`[AI] Starting stream for ${sessionId} (Stage: ${freshSession.stage})`)
 
         for await (const event of aiClient.stream(messages, systemPrompt)) {
+            console.log(`[AI] Event: ${event.type}`)
             if (event.type === 'text') {
                 assistantText += event.content
                 send({ type: 'text', content: event.content })
@@ -106,31 +117,39 @@ router.post('/:sessionId', async (req, res) => {
             if (event.type === 'tool_call') {
                 if (event.name === 'generate_file') {
                     const { filename, content } = event.input
+                    console.log(`[AI] Tool: Generating file "${filename}" for ${sessionId}`)
                     await sessionManager.addFile(sessionId, filename, content)
+                    generatedFile = filename
                     send({ type: 'file_generated', filename })
                 }
 
                 if (event.name === 'complete_stage') {
                     const nextStage = await sessionManager.advanceStage(sessionId)
+                    stageAdvanced = true
+                    console.log(`[AI] Tool: Stage complete (${freshSession.stage} -> ${nextStage}) for ${sessionId}`)
                     send({
                         type: 'stage_complete',
                         completedStage: freshSession.stage,
                         nextStage,
                         totalStages: sessionManager.TOTAL_STAGES,
                     })
+                    // Force break the stream to reset context for the next turn
+                    break
                 }
             }
         }
 
         if (assistantText) {
+            console.log(`[AI][assistantText] Adding message for ${sessionId}`)
             await sessionManager.addMessage(sessionId, 'assistant', assistantText)
         }
 
-        send({ type: 'done' })
+        console.log(`[AI] Stream complete for ${sessionId}`)
+        send({ type: 'done', stageAdvanced, generatedFile })
         res.end()
 
     } catch (err) {
-        console.error('Chat error:', err)
+        console.error(`[Error] Chat issue for ${sessionId}:`, err)
 
         // Surface auth errors to the user clearly
         const isAuthError = err.status === 401 || err.message?.includes('API key')
