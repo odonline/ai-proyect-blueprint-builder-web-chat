@@ -68,7 +68,7 @@ router.post('/:sessionId', async (req, res) => {
         return res.status(400).json({ error: 'Message is required' })
     }
 
-    const session = await sessionManager.get(sessionId)
+    let session = await sessionManager.get(sessionId)
     if (!session) return res.status(404).json({ error: 'Session not found or expired' })
 
     res.setHeader('Content-Type', 'text/event-stream')
@@ -91,67 +91,111 @@ router.post('/:sessionId', async (req, res) => {
 
         await sessionManager.addMessage(sessionId, 'user', message)
 
-        const freshSession = await sessionManager.get(sessionId)
-        const systemPrompt = buildSystemPrompt(freshSession.stage, freshSession.language)
+        let iteration = 0
+        let shouldContinue = true
+        let generatedFilesThisTurn = new Set()
+        let stageAdvancedInThisTurn = false
+        let totalAssistantText = ''
 
-        const messages = freshSession.messages.map(m => ({
-            role: m.role,
-            content: m.content,
-        }))
+        while (shouldContinue && iteration < 5) {
+            shouldContinue = false
+            iteration++
 
-        // Use provider + decrypted key from session
-        const aiClient = createAIClient(freshSession.provider, freshSession.apiKey)
-        let assistantText = ''
-        let stageAdvanced = false
-        let generatedFile = null
+            const freshSession = await sessionManager.get(sessionId)
+            const systemPrompt = buildSystemPrompt(freshSession.stage, freshSession.language, freshSession.files)
+            const aiClient = createAIClient(freshSession.provider, freshSession.apiKey)
 
-        console.log(`[AI] Starting stream for ${sessionId} (Stage: ${freshSession.stage})`)
+            const messages = freshSession.messages.map(m => ({
+                role: m.role,
+                content: m.content,
+                tool_calls: m.tool_calls,
+                tool_call_id: m.tool_call_id,
+                tool_name: m.tool_name
+            }))
 
-        for await (const event of aiClient.stream(messages, systemPrompt)) {
-            console.log(`[AI] Event: ${event.type}`)
-            if (event.type === 'text') {
-                assistantText += event.content
-                send({ type: 'text', content: event.content })
+            // 🚀 BRIDGE: If we advanced a stage in a previous iteration, tell the AI to start the new stage now.
+            if (iteration > 1 && stageAdvancedInThisTurn) {
+                messages.push({ 
+                    role: 'user', 
+                    content: `[SYSTEM] Stage successfully advanced. You are now in Stage ${freshSession.stage} (${freshSession.language}). Please proceed with the instructions for this stage immediately.` 
+                })
             }
 
-            if (event.type === 'tool_call') {
-                if (event.name === 'generate_file') {
-                    const { filename, content } = event.input
-                    console.log(`[AI] Tool: Generating file "${filename}" for ${sessionId}`)
-                    await sessionManager.addFile(sessionId, filename, content)
-                    generatedFile = filename
-                    send({ type: 'file_generated', filename })
+            let assistantText = ''
+            let loopStageAdvanced = false
+            let assistantMessageSaved = false
+
+            console.log(`[AI][Turn ${iteration}] Starting stream for ${sessionId} (Stage: ${freshSession.stage})`)
+
+            for await (const event of aiClient.stream(messages, systemPrompt)) {
+                if (event.type === 'text') {
+                    assistantText += event.content
+                    totalAssistantText += event.content
+                    send({ type: 'text', content: event.content })
                 }
 
-                if (event.name === 'complete_stage') {
-                    const nextStage = await sessionManager.advanceStage(sessionId)
-                    stageAdvanced = true
-                    console.log(`[AI] Tool: Stage complete (${freshSession.stage} -> ${nextStage}) for ${sessionId}`)
-                    send({
-                        type: 'stage_complete',
-                        completedStage: freshSession.stage,
-                        nextStage,
-                        totalStages: sessionManager.TOTAL_STAGES,
+                if (event.type === 'tool_call') {
+                    if (event.name === 'generate_file') {
+                        const { filename, content } = event.input
+                        console.log(`[AI] Tool: Generating file "${filename}" for ${sessionId}`)
+                        await sessionManager.addFile(sessionId, filename, content)
+                        
+                        if (!generatedFilesThisTurn.has(filename)) {
+                            generatedFilesThisTurn.add(filename)
+                            send({ type: 'file_generated', filename })
+                        }
+                    }
+
+                    if (event.name === 'complete_stage') {
+                        const nextStage = await sessionManager.advanceStage(sessionId)
+                        loopStageAdvanced = true
+                        stageAdvancedInThisTurn = true
+                        console.log(`[AI] Tool: Stage complete (${freshSession.stage} -> ${nextStage}) for ${sessionId}`)
+                        send({
+                            type: 'stage_complete',
+                            completedStage: freshSession.stage,
+                            nextStage,
+                            totalStages: sessionManager.TOTAL_STAGES,
+                        })
+                        break // Break inner loop to reload instructions for next turn
+                    }
+                }
+
+                if (event.type === 'history_update') {
+                    if (event.message.role === 'assistant') assistantMessageSaved = true
+                    await sessionManager.addMessage(sessionId, event.message.role, event.message.content, {
+                        tool_calls: event.message.tool_calls,
+                        tool_call_id: event.message.tool_call_id,
+                        tool_name: event.message.tool_name
                     })
-                    // Force break the stream to reset context for the next turn
-                    break
+                }
+            }
+
+            if (assistantText && !assistantMessageSaved) {
+                await sessionManager.addMessage(sessionId, 'assistant', assistantText)
+            }
+
+            if (loopStageAdvanced && freshSession.stage <= sessionManager.TOTAL_STAGES) {
+                shouldContinue = true
+                console.log(`[AI] Auto-transitioning to turn ${iteration + 1} for ${sessionId}`)
+                
+                // Add visual separator if previous turn had actual conversational text
+                if (assistantText.trim()) {
+                   send({ type: 'text', content: '\n\n---\n\n' }) 
                 }
             }
         }
 
-        if (assistantText) {
-            console.log(`[AI][assistantText] Adding message for ${sessionId}`)
-            await sessionManager.addMessage(sessionId, 'assistant', assistantText)
-        }
-
-        console.log(`[AI] Stream complete for ${sessionId}`)
-        send({ type: 'done', stageAdvanced, generatedFile })
+        console.log(`[AI] Response cycles finished for ${sessionId}`)
+        send({ 
+            type: 'done', 
+            stageAdvanced: stageAdvancedInThisTurn, 
+            generatedFile: Array.from(generatedFilesThisTurn).pop() || null 
+        })
         res.end()
 
     } catch (err) {
         console.error(`[Error] Chat issue for ${sessionId}:`, err)
-
-        // Surface auth errors to the user clearly
         const isAuthError = err.status === 401 || err.message?.includes('API key')
         send({
             type: 'error',

@@ -2,7 +2,7 @@ const db = require('../db')
 const { encrypt, decrypt } = require('../utils/crypto')
 const { v4: uuidv4 } = require('uuid')
 
-const TOTAL_STAGES = 18
+const TOTAL_STAGES = 19
 
 const TTL_SESSION = parseInt(process.env.REDIS_TTL_SESSION || '604800')  // 7 days
 const TTL_FILES = parseInt(process.env.REDIS_TTL_FILES || '172800')  // 2 days
@@ -54,11 +54,15 @@ async function get(id) {
 // ─────────────────────────────────────────────────────────
 // Add message
 // ─────────────────────────────────────────────────────────
-async function addMessage(id, role, content) {
+async function addMessage(id, role, content, metadata = {}) {
     const session = await _getSessionOnly(id)
     if (!session) throw new Error(`Session ${id} not found`)
 
-    session.messages.push({ role, content })
+    session.messages.push({ 
+        role, 
+        content,
+        ...metadata 
+    })
     session.updatedAt = Date.now()
 
     await db.set(sessionKey(id), JSON.stringify(session), TTL_SESSION)
