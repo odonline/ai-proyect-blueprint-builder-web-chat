@@ -23,9 +23,9 @@ const TOOLS_SCHEMA = {
 // Anthropic
 // ─────────────────────────────────────────────────────────
 class AnthropicClient {
-    constructor(apiKey) {
+    constructor(apiKey, model) {
         this.client = new Anthropic.default({ apiKey })
-        this.model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514'
+        this.model = model || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022'
     }
 
     get tools() {
@@ -36,9 +36,29 @@ class AnthropicClient {
         }))
     }
 
+    _mapHistory(messages) {
+        return messages.map(m => {
+            if (m.role === 'tool') {
+                return {
+                    role: 'user',
+                    content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content || 'OK' }]
+                }
+            }
+            if (m.role === 'assistant' && m.tool_calls?.length) {
+                const content = []
+                if (m.content) content.push({ type: 'text', text: m.content })
+                m.tool_calls.forEach(tc => {
+                    content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input })
+                })
+                return { role: 'assistant', content }
+            }
+            return { role: m.role, content: m.content || '' }
+        })
+    }
+
     async *stream(messages, systemPrompt) {
         let continueLoop = true
-        let currentMessages = [...messages]
+        let currentMessages = this._mapHistory(messages)
 
         while (continueLoop) {
             continueLoop = false
@@ -61,17 +81,29 @@ class AnthropicClient {
 
             if (finalMsg.stop_reason === 'tool_use') {
                 const assistantContent = finalMsg.content
+                const toolCalls = assistantContent
+                    .filter(b => b.type === 'tool_use')
+                    .map(b => ({ id: b.id, name: b.name, input: b.input }))
+                
+                const assistantHistoryMsg = { 
+                    role: 'assistant', 
+                    content: assistantContent.find(b => b.type === 'text')?.text || '', 
+                    tool_calls: toolCalls 
+                }
+                
+                yield { type: 'history_update', message: assistantHistoryMsg }
                 currentMessages = [...currentMessages, { role: 'assistant', content: assistantContent }]
 
-                const toolResults = []
-                for (const block of assistantContent) {
-                    if (block.type === 'tool_use') {
-                        yield { type: 'tool_call', name: block.name, input: block.input }
-                        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
-                    }
+                for (const tc of toolCalls) {
+                    yield { type: 'tool_call', name: tc.name, input: tc.input }
+                    const toolResMsg = { role: 'tool', tool_call_id: tc.id, content: 'OK', tool_name: tc.name }
+                    yield { type: 'history_update', message: toolResMsg }
+                    
+                    currentMessages.push({
+                        role: 'user',
+                        content: [{ type: 'tool_result', tool_use_id: tc.id, content: 'OK' }]
+                    })
                 }
-
-                currentMessages = [...currentMessages, { role: 'user', content: toolResults }]
                 continueLoop = true
             }
         }
@@ -79,12 +111,12 @@ class AnthropicClient {
 }
 
 // ─────────────────────────────────────────────────────────
-// OpenAI (also works for Groq — same SDK, different baseURL)
+// OpenAI / General OpenAI-compatible (Groq, Grok)
 // ─────────────────────────────────────────────────────────
 class OpenAIClient {
-    constructor(apiKey, { baseURL } = {}) {
+    constructor(apiKey, { baseURL, model } = {}) {
         this.client = new OpenAI.default({ apiKey, ...(baseURL ? { baseURL } : {}) })
-        this.model = process.env.OPENAI_MODEL || 'gpt-4.1'
+        this.model = model || process.env.OPENAI_MODEL || 'gpt-4o'
     }
 
     get tools() {
@@ -94,9 +126,23 @@ class OpenAIClient {
         }))
     }
 
+    _mapHistory(messages) {
+        return messages.map(m => {
+            const msg = { role: m.role, content: m.content || null }
+            if (m.tool_calls) {
+                msg.tool_calls = m.tool_calls.map(tc => ({
+                    id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.input) }
+                }))
+            }
+            if (m.tool_call_id) msg.tool_call_id = m.tool_call_id
+            if (m.tool_name) msg.name = m.tool_name
+            return msg
+        })
+    }
+
     async *stream(messages, systemPrompt) {
         let continueLoop = true
-        let currentMessages = [{ role: 'system', content: systemPrompt }, ...messages]
+        let currentMessages = [{ role: 'system', content: systemPrompt }, ...this._mapHistory(messages)]
 
         while (continueLoop) {
             continueLoop = false
@@ -129,30 +175,38 @@ class OpenAIClient {
                         if (tc.function?.arguments) toolCallsBuf[tc.index].args += tc.function.arguments
                     }
                 }
+            }
 
-                if (chunk.choices[0]?.finish_reason === 'tool_calls') {
-                    const toolCalls = Object.values(toolCallsBuf)
-                    const assistantMsg = {
-                        role: 'assistant',
-                        content: textBuffer || null,
-                        tool_calls: toolCalls.map(tc => ({
-                            id: tc.id, type: 'function',
-                            function: { name: tc.name, arguments: tc.args },
-                        })),
-                    }
-                    currentMessages = [...currentMessages, assistantMsg]
-
-                    const toolResults = []
-                    for (const tc of toolCalls) {
-                        let input = {}
-                        try { input = JSON.parse(tc.args) } catch (_) { }
-                        yield { type: 'tool_call', name: tc.name, input }
-                        toolResults.push({ role: 'tool', tool_call_id: tc.id, content: 'OK' })
-                    }
-
-                    currentMessages = [...currentMessages, ...toolResults]
-                    continueLoop = true
+            const toolCalls = Object.values(toolCallsBuf)
+            if (toolCalls.length) {
+                const assistantHistoryMsg = {
+                    role: 'assistant',
+                    content: textBuffer || null,
+                    tool_calls: toolCalls.map(tc => ({ id: tc.id, name: tc.name, input: JSON.parse(tc.args || '{}') }))
                 }
+                
+                yield { type: 'history_update', message: assistantHistoryMsg }
+                
+                const assistantApiMsg = {
+                    role: 'assistant',
+                    content: textBuffer || null,
+                    tool_calls: toolCalls.map(tc => ({
+                        id: tc.id, type: 'function',
+                        function: { name: tc.name, arguments: tc.args },
+                    })),
+                }
+                currentMessages = [...currentMessages, assistantApiMsg]
+
+                for (const tc of toolCalls) {
+                    let input = {}
+                    try { input = JSON.parse(tc.args) } catch (_) { }
+                    yield { type: 'tool_call', name: tc.name, input }
+                    
+                    const toolResMsg = { role: 'tool', tool_call_id: tc.id, content: 'OK', tool_name: tc.name }
+                    yield { type: 'history_update', message: toolResMsg }
+                    currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: 'OK', name: tc.name })
+                }
+                continueLoop = true
             }
         }
     }
@@ -162,10 +216,10 @@ class OpenAIClient {
 // Gemini
 // ─────────────────────────────────────────────────────────
 class GeminiClient {
-    constructor(apiKey) {
+    constructor(apiKey, model) {
         const { GoogleGenerativeAI } = require('@google/generative-ai')
         this.genAI = new GoogleGenerativeAI(apiKey)
-        this.modelName = process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+        this.modelName = model || process.env.GEMINI_MODEL || 'gemini-2.0-flash'
     }
 
     get tools() {
@@ -178,60 +232,143 @@ class GeminiClient {
         }]
     }
 
+    _mapHistory(messages) {
+        return messages.map(m => {
+            const parts = []
+            if (m.content) parts.push({ text: m.content })
+            
+            if (m.role === 'tool') {
+                return { 
+                    role: 'function', 
+                    parts: [{ functionResponse: { name: m.tool_name || 'unknown', response: { content: m.content || 'OK' } } }] 
+                }
+            }
+            
+            if (m.role === 'assistant' && m.tool_calls) {
+                m.tool_calls.forEach(tc => {
+                    const callPart = { functionCall: { name: tc.name, args: tc.input } }
+                    if (tc.thought_signature) {
+                        callPart.thoughtSignature = tc.thought_signature
+                    }
+                    parts.push(callPart)
+                })
+            }
+
+            return {
+                role: m.role === 'assistant' ? 'model' : m.role === 'tool' ? 'function' : 'user',
+                parts
+            }
+        }).filter(m => m.parts.length > 0)
+    }
+
     async *stream(messages, systemPrompt) {
+        let currentHistory = this._mapHistory(messages)
+        
         const model = this.genAI.getGenerativeModel({
             model: this.modelName,
             systemInstruction: systemPrompt,
             tools: this.tools,
         })
 
-        const history = messages.slice(0, -1).map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: typeof m.content === 'string' ? m.content : '' }],
-        })).filter(m => m.parts[0].text)
+        if (currentHistory.length === 0) return
 
-        const lastMsg = messages[messages.length - 1]
+        const history = currentHistory.slice(0, -1)
+        const lastMsg = currentHistory[currentHistory.length - 1]
+        
         const chat = model.startChat({ history })
-        const result = await chat.sendMessageStream(lastMsg.content)
+        let nextParts = lastMsg.parts
 
-        let toolCalls = []
+        while (true) {
+            const result = await chat.sendMessageStream(nextParts)
 
-        for await (const chunk of result.stream) {
-            const text = chunk.text?.()
-            if (text) yield { type: 'text', content: text }
+            let textBuffer = ''
+            let toolCalls = []
 
-            const calls = chunk.functionCalls?.()
-            if (calls?.length) toolCalls = [...toolCalls, ...calls]
-        }
+            for await (const chunk of result.stream) {
+                const text = chunk.text?.()
+                if (text) {
+                    textBuffer += text
+                    yield { type: 'text', content: text }
+                }
 
-        for (const call of toolCalls) {
-            yield { type: 'tool_call', name: call.name, input: call.args }
+                const candidate = chunk.candidates?.[0]
+                if (candidate?.content?.parts) {
+                    for (const part of candidate.content.parts) {
+                        if (part.functionCall) {
+                            toolCalls.push({
+                                name: part.functionCall.name,
+                                args: part.functionCall.args,
+                                thought_signature: part.thoughtSignature || candidate.thoughtSignature
+                            })
+                        }
+                    }
+                }
+            }
+
+            if (toolCalls.length) {
+                const assistantHistoryMsg = {
+                    role: 'assistant',
+                    content: textBuffer || null,
+                    tool_calls: toolCalls.map(tc => ({ 
+                        id: 'gen-' + Date.now(), 
+                        name: tc.name, 
+                        input: tc.args,
+                        thought_signature: tc.thought_signature 
+                    }))
+                }
+                yield { type: 'history_update', message: assistantHistoryMsg }
+                
+                const toolResponses = []
+                for (const call of toolCalls) {
+                    yield { type: 'tool_call', name: call.name, input: call.args }
+                    
+                    const toolResId = 'gen-' + Date.now()
+                    const toolResMsg = { role: 'tool', tool_call_id: toolResId, content: 'OK', tool_name: call.name }
+                    yield { type: 'history_update', message: toolResMsg }
+                    
+                    toolResponses.push({ 
+                        functionResponse: { name: call.name, response: { content: 'OK' } } 
+                    })
+                }
+                
+                nextParts = toolResponses
+            } else {
+                break
+            }
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────
-// Factory — driven by session provider + apiKey
+// Factory with fallback to .env API keys
 // ─────────────────────────────────────────────────────────
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1'
+const GROK_BASE_URL = 'https://api.x.ai/v1'
 
 const MODEL_DEFAULTS = {
-    anthropic: 'claude-sonnet-4-20250514',
-    openai: 'gpt-4.1',
+    anthropic: 'claude-3-5-sonnet-20241022',
+    openai: 'gpt-4o',
     gemini: 'gemini-2.0-flash',
     groq: 'llama-3.3-70b-versatile',
+    grok: 'grok-2-latest',
 }
 
 function createAIClient(provider, apiKey) {
-    const model = process.env[`${provider.toUpperCase()}_MODEL`] || MODEL_DEFAULTS[provider]
+    const provUpper = provider.toUpperCase()
+    const model = process.env[`${provUpper}_MODEL`] || MODEL_DEFAULTS[provider]
+    
+    // Fallback: If no apiKey provided in current session, use .env default key
+    const finalApiKey = apiKey || process.env[`${provUpper}_API_KEY`]
+    
     console.log(`[AI] Client initialized: ${provider} (${model})`)
 
     switch (provider) {
-        case 'openai': return new OpenAIClient(apiKey)
-        case 'gemini': return new GeminiClient(apiKey)
-        case 'groq': return new OpenAIClient(apiKey, { baseURL: GROQ_BASE_URL })
+        case 'openai': return new OpenAIClient(finalApiKey, { model })
+        case 'gemini': return new GeminiClient(finalApiKey, model)
+        case 'groq': return new OpenAIClient(finalApiKey, { baseURL: GROQ_BASE_URL, model })
+        case 'grok': return new OpenAIClient(finalApiKey, { baseURL: GROK_BASE_URL, model })
         case 'anthropic':
-        default: return new AnthropicClient(apiKey)
+        default: return new AnthropicClient(finalApiKey, model)
     }
 }
 
