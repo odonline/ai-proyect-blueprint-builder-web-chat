@@ -4,7 +4,7 @@ const sessionManager = require('../blueprint/sessionManager.v2')
 const { buildSystemPrompt } = require('../ai/systemPrompt')
 const { createAIClient } = require('../ai/client.v2')
 
-const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'gemini', 'groq']
+const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'gemini', 'groq', 'grok']
 
 // ─────────────────────────────────────────────────────────
 // POST /api/chat/session — create session with provider + key

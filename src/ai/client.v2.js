@@ -111,7 +111,7 @@ class AnthropicClient {
 }
 
 // ─────────────────────────────────────────────────────────
-// OpenAI
+// OpenAI / General OpenAI-compatible (Groq, Grok)
 // ─────────────────────────────────────────────────────────
 class OpenAIClient {
     constructor(apiKey, { baseURL, model } = {}) {
@@ -247,7 +247,6 @@ class GeminiClient {
             if (m.role === 'assistant' && m.tool_calls) {
                 m.tool_calls.forEach(tc => {
                     const callPart = { functionCall: { name: tc.name, args: tc.input } }
-                    // 🚨 CRITICAL: Restore the thought_signature if it was saved in metadata
                     if (tc.thought_signature) {
                         callPart.thoughtSignature = tc.thought_signature
                     }
@@ -273,7 +272,6 @@ class GeminiClient {
 
         if (currentHistory.length === 0) return
 
-        // Pop last message content to start the chat turn
         const history = currentHistory.slice(0, -1)
         const lastMsg = currentHistory[currentHistory.length - 1]
         
@@ -293,7 +291,6 @@ class GeminiClient {
                     yield { type: 'text', content: text }
                 }
 
-                // 🚨 CRITICAL: Extract thought_signature from the raw parts
                 const candidate = chunk.candidates?.[0]
                 if (candidate?.content?.parts) {
                     for (const part of candidate.content.parts) {
@@ -301,7 +298,6 @@ class GeminiClient {
                             toolCalls.push({
                                 name: part.functionCall.name,
                                 args: part.functionCall.args,
-                                // Capture the signature if it exists in the same or previous part
                                 thought_signature: part.thoughtSignature || candidate.thoughtSignature
                             })
                         }
@@ -317,7 +313,7 @@ class GeminiClient {
                         id: 'gen-' + Date.now(), 
                         name: tc.name, 
                         input: tc.args,
-                        thought_signature: tc.thought_signature // 🚨 Save to DB
+                        thought_signature: tc.thought_signature 
                     }))
                 }
                 yield { type: 'history_update', message: assistantHistoryMsg }
@@ -344,27 +340,35 @@ class GeminiClient {
 }
 
 // ─────────────────────────────────────────────────────────
-// Factory
+// Factory with fallback to .env API keys
 // ─────────────────────────────────────────────────────────
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1'
+const GROK_BASE_URL = 'https://api.x.ai/v1'
 
 const MODEL_DEFAULTS = {
     anthropic: 'claude-3-5-sonnet-20241022',
     openai: 'gpt-4o',
     gemini: 'gemini-2.0-flash',
     groq: 'llama-3.3-70b-versatile',
+    grok: 'grok-2-latest',
 }
 
 function createAIClient(provider, apiKey) {
-    const model = process.env[`${provider.toUpperCase()}_MODEL`] || MODEL_DEFAULTS[provider]
+    const provUpper = provider.toUpperCase()
+    const model = process.env[`${provUpper}_MODEL`] || MODEL_DEFAULTS[provider]
+    
+    // Fallback: If no apiKey provided in current session, use .env default key
+    const finalApiKey = apiKey || process.env[`${provUpper}_API_KEY`]
+    
     console.log(`[AI] Client initialized: ${provider} (${model})`)
 
     switch (provider) {
-        case 'openai': return new OpenAIClient(apiKey, { model })
-        case 'gemini': return new GeminiClient(apiKey, model)
-        case 'groq': return new OpenAIClient(apiKey, { baseURL: GROQ_BASE_URL, model })
+        case 'openai': return new OpenAIClient(finalApiKey, { model })
+        case 'gemini': return new GeminiClient(finalApiKey, model)
+        case 'groq': return new OpenAIClient(finalApiKey, { baseURL: GROQ_BASE_URL, model })
+        case 'grok': return new OpenAIClient(finalApiKey, { baseURL: GROK_BASE_URL, model })
         case 'anthropic':
-        default: return new AnthropicClient(apiKey, model)
+        default: return new AnthropicClient(finalApiKey, model)
     }
 }
 
