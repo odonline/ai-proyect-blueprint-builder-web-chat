@@ -4,9 +4,9 @@ const archiver = require('archiver')
 const sessionManager = require('../blueprint/sessionManager.v2')
 
 // GET /api/download/:sessionId
-router.get('/:sessionId', (req, res) => {
+router.get('/:sessionId', async (req, res) => {
   const { sessionId } = req.params
-  const session = sessionManager.get(sessionId)
+  const session = await sessionManager.get(sessionId)
 
   if (!session) return res.status(404).json({ error: 'Session not found' })
 
